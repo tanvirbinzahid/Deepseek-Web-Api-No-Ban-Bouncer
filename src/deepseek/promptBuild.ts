@@ -151,8 +151,13 @@ function toolState(body: RequestBody): { text: string; fingerprint: string; hasT
     "Rules:",
     "- Open tag is exactly <tool_call> and close tag is exactly </tool_call>.",
     "- Never write <_call>, <tool_call name=...>, attributes on the tag, or nested wrappers.",
-    "- JSON must include both name and arguments. arguments must match the selected tool schema.",
-    "- Multiple tools = multiple consecutive blocks.",
+    "- JSON must include both name and arguments, and every string, {, and [ must be fully closed.",
+    "- arguments must match the selected tool schema. Each call must be one complete block.",
+    "- Multiple tools = multiple consecutive complete blocks.",
+    "- When tools are needed, emit only finished call blocks; never draft a partial call in RESPONSE.",
+    "- After tool results, you MUST either emit complete <tool_call> blocks in RESPONSE to gather more evidence, or write the final user-visible answer in RESPONSE.",
+    "- Never end with THINK-only. Never output an empty RESPONSE when tools are available and analysis is incomplete.",
+    "- For codebase analysis, prefer reading src/**, CI workflows, and tests before the final summary.",
     "- Do not invent tool names. Do not execute tools yourself.",
     "If the user asks about local files, code, or project contents, you MUST call tools instead of guessing.",
     body.tool_choice !== undefined || body.function_call !== undefined
@@ -184,6 +189,39 @@ function newTurns(turns: MessageTurn[], previous: readonly MessageTurn[] | undef
 
 function renderTurns(turns: MessageTurn[]): string {
   return turns.map((turn) => `${turn.role}:\n${turn.content}`).join("\n\n");
+}
+
+function configuredToolNames(body: RequestBody): string[] {
+  const values = [
+    ...(Array.isArray(body.tools) ? body.tools : []),
+    ...(Array.isArray(body.functions) ? body.functions : []),
+  ];
+  return values.flatMap((value) => {
+    if (!isRecord(value)) return [];
+    const fn = isRecord(value.function) ? value.function : value;
+    return typeof fn.name === "string" && fn.name.trim() ? [fn.name.trim()] : [];
+  });
+}
+
+/** Retry an empty tool turn in a fresh session with only essential continuation context. */
+export function buildToolRecoveryPrompt(
+  body: RequestBody,
+  requestTurns: MessageTurn[],
+  latestUserText: string,
+): string {
+  const names = configuredToolNames(body);
+  const policy = [
+    "The previous upstream completion produced no usable tool call or final answer. Continue the same task.",
+    "After tool results, output either complete <tool_call> JSON blocks in RESPONSE or the final user-visible answer in RESPONSE.",
+    "Never end with THINK-only and never leave RESPONSE empty.",
+    names.length ? `Available tools: ${names.join(", ")}` : "",
+  ].filter(Boolean).join("\n");
+  const turns = requestTurns.length > 0 ? requestTurns : requestConversationTurns(body);
+  return [
+    `[Tool recovery]\n${policy}`,
+    latestUserText ? `[Original user task]\n${latestUserText}` : "",
+    turns.length ? `[Recent conversation]\n${renderTurns(turns)}` : "",
+  ].filter(Boolean).join("\n\n");
 }
 
 export function buildDeepSeekPrompt(body: RequestBody, options: PromptBuildOptions): BuiltPrompt {

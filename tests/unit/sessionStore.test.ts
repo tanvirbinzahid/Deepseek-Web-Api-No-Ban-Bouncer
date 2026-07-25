@@ -5,6 +5,24 @@ import { SessionStore } from "../../src/deepseek/sessionStore.js";
 import { canonicalAssistantText } from "../../src/deepseek/toolCalls.js";
 
 describe("SessionStore", () => {
+  it("does not persist or advance a session for an empty assistant response", () => {
+    const store = new SessionStore();
+    store.remember({
+      sessionId: "empty-session",
+      modelType: "expert",
+      responseMessageId: 99,
+      prompt: "inspect",
+      responseText: "   ",
+    });
+
+    expect(store.get("empty-session")).toBeUndefined();
+    expect(store.resolve({ conversation: "empty-session" })).toMatchObject({
+      sessionId: "empty-session",
+      parentMessageId: null,
+      createIfMissing: true,
+    });
+  });
+
   it("matches full history across model switches", () => {
     const store = new SessionStore();
     store.remember({
@@ -26,6 +44,28 @@ describe("SessionStore", () => {
     });
 
     expect(resolution).toMatchObject({ sessionId: "session-1", parentMessageId: 42 });
+  });
+
+  it("reuses a long Pi history after the persisted turn window is truncated", () => {
+    const store = new SessionStore();
+    const messages: Array<Record<string, unknown>> = [];
+    for (let index = 0; index < 22; index += 1) {
+      const user = { role: "user", content: `request-${index}` };
+      const assistant = { role: "assistant", content: `answer-${index}` };
+      messages.push(user, assistant);
+      store.remember({
+        sessionId: "long-session",
+        modelType: "expert",
+        responseMessageId: index + 1,
+        prompt: `request-${index}`,
+        responseText: `answer-${index}`,
+        requestTurns: [{ role: "user", content: `request-${index}` }],
+      });
+    }
+
+    expect(store.get("long-session")?.turns).toHaveLength(40);
+    expect(store.resolve({ messages: [...messages, { role: "user", content: "continue" }] }))
+      .toMatchObject({ sessionId: "long-session", parentMessageId: 22 });
   });
 
   it("resolves previous_response_id", () => {

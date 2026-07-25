@@ -2,6 +2,7 @@
 import { describe, expect, it } from "vitest";
 
 import { consumeResponses } from "../../src/deepseek/mapResponses.js";
+import { EMPTY_TOOL_RESPONSE_TEXT } from "../../src/deepseek/toolOutcome.js";
 
 interface EventRecord {
   event: string;
@@ -53,6 +54,59 @@ describe("consumeResponses", () => {
     );
     expect(events.filter(({ event }) => event.includes("reasoning"))).toEqual([]);
     expect(events.filter(({ event }) => event === "response.output_text.delta")).toEqual([]);
+  });
+
+  it("maps a repaired truncated tool payload to a Responses function_call", async () => {
+    const truncated = '<_call>\n{"name":"read","arguments":{"path":"package.json"}\n</tool_call>';
+    const result = await consumeResponses(baseInput(upstream({ output: truncated })));
+
+    expect(result.response.output_text).toBe("");
+    expect(result.response.output).toContainEqual(
+      expect.objectContaining({
+        type: "function_call",
+        name: "read",
+        arguments: '{"path":"package.json"}',
+      }),
+    );
+    expect(result.rawOutputText).toBe(
+      '<tool_call>\n{"arguments":{"path":"package.json"},"name":"read"}\n</tool_call>',
+    );
+  });
+
+  it("does not expose unrepaired protocol-only garbage as final output text", async () => {
+    const garbage = '<_call>\n{"name":"read","arguments":{"path":"package.json}\n</tool_call>';
+    const result = await consumeResponses(baseInput(upstream({ output: garbage })));
+
+    expect(result.response.output_text).toBe(EMPTY_TOOL_RESPONSE_TEXT);
+    expect(JSON.stringify(result.response.output)).not.toContain("<_call>");
+    expect(JSON.stringify(result.response.output)).not.toContain('{"name":"read"');
+    expect(result.rawOutputText).toBe(EMPTY_TOOL_RESPONSE_TEXT);
+    expect(result.diagnostics.recoverableEmpty).toBe(true);
+  });
+
+  it("does not promote unrepaired reasoning-only protocol garbage to final text", async () => {
+    const garbage = '<_call>\n{"name":"read","arguments":{"path":"package.json}\n</tool_call>';
+    const result = await consumeResponses(baseInput(upstream({ reasoning: garbage })));
+
+    expect(result.response.output_text).toBe(EMPTY_TOOL_RESPONSE_TEXT);
+    expect(JSON.stringify(result.response.output)).not.toContain("<_call>");
+    expect(result.rawOutputText).toBe(EMPTY_TOOL_RESPONSE_TEXT);
+    expect(result.diagnostics.recoverableEmpty).toBe(true);
+  });
+
+  it("never maps a double-empty tool response to an empty completed message", async () => {
+    const result = await consumeResponses(baseInput(upstream({})));
+
+    expect(result.response.output_text).toBe(EMPTY_TOOL_RESPONSE_TEXT);
+    expect(result.response.output).toContainEqual(expect.objectContaining({
+      type: "message",
+      content: [{ type: "output_text", text: EMPTY_TOOL_RESPONSE_TEXT }],
+    }));
+    expect(result.diagnostics).toMatchObject({
+      emptyUpstream: true,
+      recoverableEmpty: true,
+      toolCallCount: 0,
+    });
   });
 
   it("hides reasoning prose and leaked tool protocol on a tool turn", async () => {
@@ -146,6 +200,10 @@ describe("consumeResponses", () => {
       data: expect.objectContaining({ delta: answer, output_index: 0 }),
     }));
     expect(result.rawOutputText).toBe(answer);
+    expect(result.diagnostics).toMatchObject({
+      promotedReasoning: true,
+      recoverableEmpty: false,
+    });
   });
 
   it("streams reasoning once before a normal message", async () => {

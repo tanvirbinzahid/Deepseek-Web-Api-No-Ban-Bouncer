@@ -4,15 +4,13 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-
 import type { Logger } from "../utils/logger.js";
 import { isRecord } from "../utils/json.js";
 import { normalizeText } from "../utils/text.js";
 import { requestConversationTurns } from "./promptBuild.js";
+import { fingerprint, fpKey, turnsEqual, turnsPrefix, turnsSuffix } from "./sessionTurns.js";
 import type { MessageTurn, ModelType, RequestBody } from "./types.js";
-
 export type MessageId = string | number | null;
-
 export interface SessionEntry {
   lastResponseMessageId: MessageId;
   lastModelType?: ModelType;
@@ -22,7 +20,6 @@ export interface SessionEntry {
   updatedAt: number;
   turns: MessageTurn[];
 }
-
 export interface ConversationResolution {
   sessionId: string | null;
   parentMessageId: MessageId;
@@ -30,46 +27,16 @@ export interface ConversationResolution {
   pendingFingerprint?: string;
   createIfMissing?: boolean;
 }
-
 interface SessionDisk {
   sessions: Record<string, SessionEntry>;
   convs: Record<string, string>;
 }
-
 /** Exclude the trailing request turn because it is not stored history yet. */
 function historyTurns(messages: unknown): MessageTurn[] {
   if (!Array.isArray(messages)) return [];
   const turns = requestConversationTurns({ messages });
   return turns.at(-1)?.role === "assistant" ? turns : turns.slice(0, -1);
 }
-
-function fingerprint(turns: MessageTurn[]): string {
-  return turns.map((turn) => `${turn.role}:${turn.content}`).join("\n---\n");
-}
-
-function fpKey(value: string): string {
-  return `fp:${value}`;
-}
-
-function turnsEqual(left: MessageTurn[], right: MessageTurn[]): boolean {
-  if (left.length === 0 || left.length !== right.length) return false;
-  return left.every(
-    (turn, index) =>
-      turn.role === right[index]?.role && normalizeText(turn.content) === normalizeText(right[index]?.content),
-  );
-}
-
-/** Symmetric prefix matching tolerates clients that send shorter or longer history windows. */
-function turnsPrefix(left: MessageTurn[], right: MessageTurn[]): boolean {
-  if (left.length === 0 || right.length === 0) return false;
-  const length = Math.min(left.length, right.length);
-  for (let index = 0; index < length; index += 1) {
-    if (left[index]?.role !== right[index]?.role) return false;
-    if (normalizeText(left[index]?.content) !== normalizeText(right[index]?.content)) return false;
-  }
-  return true;
-}
-
 function metadata(body: RequestBody): Record<string, unknown> {
   return isRecord(body.metadata) ? body.metadata : {};
 }
@@ -168,13 +135,21 @@ export class SessionStore {
     instructionFingerprint?: string;
     toolsFingerprint?: string;
   }): void {
+    const assistantText = normalizeText(input.responseText);
+    if (!assistantText.trim()) {
+      this.logger?.warn("Skipping empty assistant turn", {
+        sessionId: input.sessionId,
+        responseMessageId: input.responseMessageId,
+      });
+      return;
+    }
     const previous = this.sessions.get(input.sessionId);
     const turns = previous ? [...previous.turns] : [];
     const requests = input.requestTurns?.length
       ? input.requestTurns
       : [{ role: "user", content: input.prompt }];
     turns.push(...requests.map((turn) => ({ role: turn.role, content: normalizeText(turn.content) })));
-    turns.push({ role: "assistant", content: normalizeText(input.responseText) });
+    turns.push({ role: "assistant", content: assistantText });
     const instructionFingerprint = input.instructionFingerprint ?? previous?.instructionFingerprint;
     const toolsFingerprint = input.toolsFingerprint ?? previous?.toolsFingerprint;
     const entry: SessionEntry = {
@@ -231,12 +206,21 @@ export class SessionStore {
     for (const [sessionId, entry] of this.sessions) {
       const stored = entry.turns.map((turn) => ({ ...turn, content: normalizeText(turn.content) }));
       let score = 0;
-      if (turnsEqual(stored, turns) || turnsPrefix(stored, turns) || turnsPrefix(turns, stored)) {
+      if (
+        turnsEqual(stored, turns) ||
+        turnsPrefix(stored, turns) ||
+        turnsPrefix(turns, stored) ||
+        turnsSuffix(stored, turns) ||
+        turnsSuffix(turns, stored)
+      ) {
         score = Math.min(stored.length, turns.length);
       } else {
         const lastIncoming = [...turns].reverse().find((turn) => turn.role === "assistant");
         const lastStored = [...stored].reverse().find((turn) => turn.role === "assistant");
-        if (lastIncoming?.content && lastIncoming.content === lastStored?.content) score = 0.5;
+        if (
+          lastIncoming?.content &&
+          normalizeText(lastIncoming.content) === normalizeText(lastStored?.content ?? "")
+        ) score = 0.5;
       }
       if (score > 0 && (!best || score > best.score)) best = { sessionId, score };
     }

@@ -23,6 +23,7 @@ export function writeSseHeaders(response: ServerResponse): void {
     "cache-control": "no-cache, no-transform",
     connection: "keep-alive",
   });
+  response.flushHeaders();
 }
 
 export function writeSse(response: ServerResponse, event: string, data: unknown): void {

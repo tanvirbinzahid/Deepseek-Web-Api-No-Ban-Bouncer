@@ -1,9 +1,13 @@
 /** Maps normalized DeepSeek updates to OpenAI Responses objects and SSE events. */
 import type { ToolReasoningMode } from "../config/env.js";
+import { ResponseEventWriter, type ResponseEmitter } from "./responseEvents.js";
 import type { MessageId } from "./sessionStore.js";
-import { canonicalParsedAssistantText, parseToolCalls, parseToolCallsFromParts } from "./toolCalls.js";
+import { canonicalParsedAssistantText, parseToolCalls } from "./toolCalls.js";
+import { EMPTY_TOOL_RESPONSE_TEXT, resolveToolTurn } from "./toolOutcome.js";
 import type { ModelType, PublicModel } from "./types.js";
 import { iterDeepSeekUpdates } from "./updates.js";
+export type { ResponseEmitter } from "./responseEvents.js";
+
 export interface ResponseMetadata extends Record<string, unknown> {
   chat_session_id: string;
   source: "chat.deepseek.com";
@@ -23,13 +27,22 @@ export interface OpenAIResponse {
   usage: { input_tokens: number; output_tokens: number; total_tokens: number };
   metadata: ResponseMetadata;
 }
+export interface CompletionDiagnostics {
+  reasoningChars: number;
+  outputChars: number;
+  toolCallCount: number;
+  emptyUpstream: boolean;
+  recoverableEmpty: boolean;
+  promotedReasoning: boolean;
+}
 export interface MappedResponseResult {
   response: OpenAIResponse;
   requestMessageId: MessageId;
   responseMessageId: MessageId;
   rawOutputText: string;
+  diagnostics: CompletionDiagnostics;
 }
-export type ResponseEmitter = (event: string, data: Record<string, unknown>) => void;
+
 function responseBase(
   id: string,
   publicModel: PublicModel,
@@ -47,6 +60,7 @@ function responseBase(
     metadata: { chat_session_id: sessionId, source: "chat.deepseek.com" },
   };
 }
+
 /** Consume one upstream stream while building both live events and the final response. */
 export async function consumeResponses(input: {
   upstream: Response;
@@ -57,87 +71,20 @@ export async function consumeResponses(input: {
   searchEnabled: boolean;
   toolCompatibilityEnabled: boolean;
   toolReasoning: ToolReasoningMode;
+  emptyToolResponseText?: string;
   emit?: ResponseEmitter;
 }): Promise<MappedResponseResult> {
   const id = `resp_${input.sessionId}`;
-  const reasoningId = `${id}_reasoning`;
-  const messageId = `${id}_message`;
+  const writer = new ResponseEventWriter(input.emit, `${id}_reasoning`, `${id}_message`);
   const createdAt = Math.floor(Date.now() / 1000);
-  const inProgress = responseBase(id, input.publicModel, input.sessionId, createdAt);
-  let sequence = 0;
-  const emit = (event: string, data: Record<string, unknown>): void => {
-    input.emit?.(event, { ...data, sequence_number: sequence++ });
-  };
-  emit("response.created", { type: "response.created", response: inProgress });
-  emit("response.in_progress", { type: "response.in_progress", response: inProgress });
+  writer.start(responseBase(id, input.publicModel, input.sessionId, createdAt));
   let reasoning = "";
   let outputText = "";
   let title: string | null = null;
   let tokens = 0;
-  let reasoningOpened = false;
-  let messageOpened = false;
   let requestMessageId: MessageId = null;
   let responseMessageId: MessageId = null;
-  const ensureReasoning = (): void => {
-    if (reasoningOpened) return;
-    reasoningOpened = true;
-    emit("response.output_item.added", {
-      type: "response.output_item.added",
-      output_index: 0,
-      item: { type: "reasoning", id: reasoningId, summary: [], content: [] },
-    });
-    emit("response.content_part.added", {
-      type: "response.content_part.added",
-      item_id: reasoningId,
-      output_index: 0,
-      content_index: 0,
-      part: { type: "reasoning_text", text: "" },
-    });
-  };
-  const emitReasoningDelta = (delta: string): void => {
-    ensureReasoning();
-    // Pi consumes raw and summary deltas, so one family prevents duplicate live thinking.
-    emit("response.reasoning_text.delta", {
-      type: "response.reasoning_text.delta",
-      item_id: reasoningId,
-      output_index: 0,
-      content_index: 0,
-      delta,
-    });
-  };
-  const ensureMessage = (): void => {
-    if (messageOpened) return;
-    messageOpened = true;
-    const outputIndex = reasoningOpened ? 1 : 0;
-    emit("response.output_item.added", {
-      type: "response.output_item.added",
-      output_index: outputIndex,
-      item: {
-        type: "message",
-        id: messageId,
-        role: "assistant",
-        status: "in_progress",
-        content: [],
-      },
-    });
-    emit("response.content_part.added", {
-      type: "response.content_part.added",
-      item_id: messageId,
-      output_index: outputIndex,
-      content_index: 0,
-      part: { type: "output_text", text: "" },
-    });
-  };
-  const emitOutputDelta = (delta: string): void => {
-    ensureMessage();
-    emit("response.output_text.delta", {
-      type: "response.output_text.delta",
-      item_id: messageId,
-      output_index: reasoningOpened ? 1 : 0,
-      content_index: 0,
-      delta,
-    });
-  };
+
   for await (const update of iterDeepSeekUpdates(input.upstream)) {
     if (update.type === "ready") {
       requestMessageId = update.requestMessageId ?? requestMessageId;
@@ -146,88 +93,55 @@ export async function consumeResponses(input: {
     else if (update.type === "tokens") tokens = update.value;
     else if (update.type === "reasoning" && update.delta) {
       reasoning += update.delta;
-      if (!input.toolCompatibilityEnabled && messageOpened && reasoningOpened) {
-        emitReasoningDelta(update.delta);
+      if (!input.toolCompatibilityEnabled && writer.messageOpened && writer.reasoningOpened) {
+        writer.emitReasoningDelta(update.delta);
       }
     } else if (update.type === "output" && update.delta) {
       outputText += update.delta;
       if (!input.toolCompatibilityEnabled) {
-        if (!messageOpened && reasoning) emitReasoningDelta(reasoning);
-        emitOutputDelta(update.delta);
+        if (!writer.messageOpened && reasoning) writer.emitReasoningDelta(reasoning);
+        writer.emitOutputDelta(update.delta);
       }
     }
   }
-  const parsed = input.toolCompatibilityEnabled
-    ? parseToolCallsFromParts(outputText, reasoning, id)
-    : { content: outputText, toolCalls: [] };
+
+  const toolOutcome = input.toolCompatibilityEnabled
+    ? resolveToolTurn(
+        outputText,
+        reasoning,
+        id,
+        input.emptyToolResponseText ?? EMPTY_TOOL_RESPONSE_TEXT,
+      )
+    : null;
+  const parsed = toolOutcome?.parsed ?? { content: outputText, toolCalls: [] };
   const hasToolCalls = parsed.toolCalls.length > 0;
   const hasResponseText = outputText.trim().length > 0;
-  const visibleText = hasResponseText || hasToolCalls ? parsed.content : reasoning;
+  const visibleText = input.toolCompatibilityEnabled
+    ? parsed.content
+    : hasResponseText
+      ? outputText
+      : reasoning;
   const reasoningVisible = hasToolCalls
     ? input.toolReasoning === "clean"
       ? parseToolCalls(reasoning).content
       : ""
-    : hasResponseText
-      ? reasoning
-      : "";
+    : input.toolCompatibilityEnabled
+      ? toolOutcome?.promotedReasoning
+        ? ""
+        : hasResponseText
+          ? reasoning
+          : ""
+      : hasResponseText
+        ? reasoning
+        : "";
   const shouldIncludeMessage = !hasToolCalls || visibleText.length > 0;
-  if (reasoningVisible && !reasoningOpened) emitReasoningDelta(reasoningVisible);
-  if (shouldIncludeMessage && !messageOpened) {
-    ensureMessage();
-    if (visibleText) emitOutputDelta(visibleText);
-  }
+  if (reasoningVisible && !writer.reasoningOpened) writer.emitReasoningDelta(reasoningVisible);
+  if (shouldIncludeMessage && !writer.messageOpened && visibleText) writer.emitOutputDelta(visibleText);
+  if (shouldIncludeMessage && !writer.messageOpened) writer.emitOutputDelta("");
+
   const output: Array<Record<string, unknown>> = [];
-  if (reasoningOpened) {
-    emit("response.reasoning_text.done", {
-      type: "response.reasoning_text.done",
-      item_id: reasoningId,
-      output_index: 0,
-      content_index: 0,
-      text: reasoningVisible,
-    });
-    const item = {
-      type: "reasoning",
-      id: reasoningId,
-      summary: [{ type: "summary_text", text: reasoningVisible }],
-      content: [{ type: "reasoning_text", text: reasoningVisible }],
-    };
-    output.push(item);
-    emit("response.output_item.done", {
-      type: "response.output_item.done",
-      output_index: 0,
-      item,
-    });
-  }
-  if (messageOpened) {
-    const outputIndex = output.length;
-    emit("response.output_text.done", {
-      type: "response.output_text.done",
-      item_id: messageId,
-      output_index: outputIndex,
-      content_index: 0,
-      text: visibleText,
-    });
-    emit("response.content_part.done", {
-      type: "response.content_part.done",
-      item_id: messageId,
-      output_index: outputIndex,
-      content_index: 0,
-      part: { type: "output_text", text: visibleText },
-    });
-    const item = {
-      type: "message",
-      id: messageId,
-      role: "assistant",
-      status: "completed",
-      content: [{ type: "output_text", text: visibleText }],
-    };
-    output.push(item);
-    emit("response.output_item.done", {
-      type: "response.output_item.done",
-      output_index: outputIndex,
-      item,
-    });
-  }
+  writer.finishReasoning(reasoningVisible, output);
+  writer.finishMessage(visibleText, output);
   for (const call of parsed.toolCalls) {
     const item = {
       type: "function_call",
@@ -239,29 +153,9 @@ export async function consumeResponses(input: {
     };
     const outputIndex = output.length;
     output.push(item);
-    emit("response.output_item.added", {
-      type: "response.output_item.added",
-      output_index: outputIndex,
-      item: { ...item, arguments: "", status: "in_progress" },
-    });
-    emit("response.function_call_arguments.delta", {
-      type: "response.function_call_arguments.delta",
-      item_id: item.id,
-      output_index: outputIndex,
-      delta: item.arguments,
-    });
-    emit("response.function_call_arguments.done", {
-      type: "response.function_call_arguments.done",
-      item_id: item.id,
-      output_index: outputIndex,
-      arguments: item.arguments,
-    });
-    emit("response.output_item.done", {
-      type: "response.output_item.done",
-      output_index: outputIndex,
-      item,
-    });
+    writer.emitFunctionCall(item, outputIndex);
   }
+
   const final: OpenAIResponse = {
     id,
     object: "response",
@@ -288,7 +182,20 @@ export async function consumeResponses(input: {
         : {}),
     },
   };
-  emit("response.completed", { type: "response.completed", response: final });
+  writer.emit("response.completed", { type: "response.completed", response: final });
   const rawForSession = hasToolCalls ? canonicalParsedAssistantText(parsed) : visibleText;
-  return { response: final, requestMessageId, responseMessageId, rawOutputText: rawForSession };
+  return {
+    response: final,
+    requestMessageId,
+    responseMessageId,
+    rawOutputText: rawForSession,
+    diagnostics: {
+      reasoningChars: reasoning.length,
+      outputChars: outputText.length,
+      toolCallCount: parsed.toolCalls.length,
+      emptyUpstream: toolOutcome?.emptyUpstream ?? (!reasoning.trim() && !outputText.trim()),
+      recoverableEmpty: toolOutcome?.recoverableEmpty ?? false,
+      promotedReasoning: toolOutcome?.promotedReasoning ?? false,
+    },
+  };
 }

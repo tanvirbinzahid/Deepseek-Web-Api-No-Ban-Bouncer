@@ -8,6 +8,24 @@ import {
   parseToolCallsFromParts,
 } from "../../src/deepseek/toolCalls.js";
 
+const FAILED_SESSION_A = `{"name": "read", "arguments": {"path": "/Users/kittors/Developer/opensource/deepseek-web-api/.github/workflows/ci.yml"}
+
+{"name": "read", "arguments": {"path": "/Users/kittors/Developer/opensource/deepseek-web-api/tsconfig.json"}`;
+
+const FAILED_SESSION_B = `<_call>
+{"name": "bash", "arguments": {"command": "find /Users/kittors/Developer/opensource/deepseek-web-api/src -name '*.ts' | sort", "timeout": 5}
+</tool_call>`;
+
+const FAILED_SESSION_C = `<_call>
+{"name": "read", "arguments": {"path": "/Users/kittors/Developer/opensource/deepseek-web-api/src/deepseek/client.ts"}
+</tool_call>
+<tool_call>
+{"name": "read", "arguments": {"path": "/Users/kittors/Developer/opensource/deepseek-web-api/src/server/routes.ts"}
+</tool_call>
+<tool_call>
+{"name": "read", "arguments": {"path": "/Users/kittors/Developer/opensource/deepseek-web-api/src/deepseek/completion.ts"}
+</tool_call>`;
+
 describe("parseToolCalls", () => {
   it("maps tagged JSON to OpenAI tool_calls while preserving normal content", () => {
     const result = parseToolCalls(
@@ -125,6 +143,120 @@ describe("parseToolCalls", () => {
     });
   });
 
+  it("repairs both truncated bare reads from failed session A", () => {
+    const result = parseToolCalls(FAILED_SESSION_A, "session-a");
+
+    expect(result.content).toBe("");
+    expect(result.toolCalls.map((call) => call.function.name)).toEqual(["read", "read"]);
+    expect(result.toolCalls.map((call) => JSON.parse(call.function.arguments))).toEqual([
+      {
+        path: "/Users/kittors/Developer/opensource/deepseek-web-api/.github/workflows/ci.yml",
+      },
+      { path: "/Users/kittors/Developer/opensource/deepseek-web-api/tsconfig.json" },
+    ]);
+  });
+
+  it("repairs the cross-closed truncated bash from failed session B", () => {
+    const result = parseToolCalls(FAILED_SESSION_B, "session-b");
+
+    expect(result.content).toBe("");
+    expect(result.toolCalls.map((call) => call.function.name)).toEqual(["bash"]);
+    expect(JSON.parse(result.toolCalls[0]?.function.arguments ?? "{}")).toEqual({
+      command: "find /Users/kittors/Developer/opensource/deepseek-web-api/src -name '*.ts' | sort",
+      timeout: 5,
+    });
+    expect(canonicalParsedAssistantText(result)).toBe(
+      '<tool_call>\n{"arguments":{"command":"find /Users/kittors/Developer/opensource/deepseek-web-api/src -name \'*.ts\' | sort","timeout":5},"name":"bash"}\n</tool_call>',
+    );
+  });
+
+  it.each([
+    ["<_call>", "</tool_call>"],
+    ["<_call>", "</_call>"],
+    ["<tool_call>", "</_call>"],
+    ["<tool_call>", "</tool_call>"],
+  ])("repairs loose tag pair %s ... %s", (open, close) => {
+    const result = parseToolCalls(
+      `${open}\n{"name":"read","arguments":{"path":"README.md"}\n${close}`,
+    );
+
+    expect(result.content).toBe("");
+    expect(result.toolCalls[0]?.function).toEqual({
+      name: "read",
+      arguments: '{"path":"README.md"}',
+    });
+  });
+
+  it("repairs all three truncated reads from failed session C", () => {
+    const result = parseToolCalls(FAILED_SESSION_C, "session-c");
+
+    expect(result.content).toBe("");
+    expect(result.toolCalls.map((call) => call.function.name)).toEqual(["read", "read", "read"]);
+    expect(result.toolCalls.map((call) => JSON.parse(call.function.arguments).path)).toEqual([
+      "/Users/kittors/Developer/opensource/deepseek-web-api/src/deepseek/client.ts",
+      "/Users/kittors/Developer/opensource/deepseek-web-api/src/server/routes.ts",
+      "/Users/kittors/Developer/opensource/deepseek-web-api/src/deepseek/completion.ts",
+    ]);
+  });
+
+  it("repairs several missing nested closers without changing their data", () => {
+    const result = parseToolCalls(
+      '{"name":"write","arguments":{"config":{"items":[{"path":"a"},{"path":"b"}]',
+    );
+
+    expect(result.content).toBe("");
+    expect(JSON.parse(result.toolCalls[0]?.function.arguments ?? "{}")).toEqual({
+      config: { items: [{ path: "a" }, { path: "b" }] },
+    });
+  });
+
+  it("harvests a complete tagged call beside a truncated bare call", () => {
+    const result = parseToolCalls(`<tool_call>
+{"name":"bash","arguments":{"command":"pwd"}}
+</tool_call>
+{"arguments":{"path":"package.json"},"name":"read"`);
+
+    expect(result.content).toBe("");
+    expect(result.toolCalls.map((call) => call.function)).toEqual([
+      { name: "bash", arguments: '{"command":"pwd"}' },
+      { name: "read", arguments: '{"path":"package.json"}' },
+    ]);
+  });
+
+  it("keeps a valid bash call while repairing both failed session A reads", () => {
+    const result = parseToolCalls(`<tool_call>
+{"name":"bash","arguments":{"command":"ls -la /Users/kittors/Developer/opensource/deepseek-web-api/src/","timeout":5}}
+</tool_call>
+${FAILED_SESSION_A}`);
+
+    expect(result.content).toBe("");
+    expect(result.toolCalls.map((call) => call.function.name)).toEqual(["bash", "read", "read"]);
+  });
+
+  it("repairs an unclosed tagged block at end of output", () => {
+    const result = parseToolCalls('<tool_call>\n{"name":"read","arguments":{"path":"README.md"');
+
+    expect(result.content).toBe("");
+    expect(result.toolCalls[0]?.function).toEqual({
+      name: "read",
+      arguments: '{"path":"README.md"}',
+    });
+  });
+
+  it("does not swallow prose or fenced JSON documentation examples", () => {
+    const prose = 'Example payload:\n{"name":"read","arguments":{"path":"README.md"}}';
+    const fenced = '```json\n{"name":"read","arguments":{"path":"README.md"}}\n```';
+
+    expect(parseToolCalls(prose)).toEqual({ content: prose, toolCalls: [] });
+    expect(parseToolCalls(fenced)).toEqual({ content: fenced, toolCalls: [] });
+  });
+
+  it("cleans protocol-only garbage when an unfinished string cannot be repaired safely", () => {
+    const garbage = '<_call>\n{"name":"read","arguments":{"path":"README.md}\n</tool_call>';
+
+    expect(parseToolCalls(garbage)).toEqual({ content: "", toolCalls: [] });
+  });
+
   it("promotes tool tags leaked into reasoning when output has none", () => {
     const result = parseToolCallsFromParts(
       "",
@@ -148,5 +280,26 @@ describe("parseToolCalls", () => {
     );
     expect(result.toolCalls).toHaveLength(1);
     expect(result.toolCalls[0]?.function.name).toBe("read");
+  });
+
+  it("promotes a truncated call found only in reasoning", () => {
+    const result = parseToolCallsFromParts("", FAILED_SESSION_B, "reasoning-repair");
+
+    expect(result.content).toBe("");
+    expect(result.toolCalls).toHaveLength(1);
+    expect(result.toolCalls[0]?.function.name).toBe("bash");
+  });
+
+  it("returns cleaned reasoning when no RESPONSE text exists", () => {
+    expect(parseToolCallsFromParts("", "A normal final answer.")).toEqual({
+      content: "A normal final answer.",
+      toolCalls: [],
+    });
+    expect(
+      parseToolCallsFromParts(
+        "",
+        '<_call>\n{"name":"read","arguments":{"path":"README.md}\n</tool_call>',
+      ),
+    ).toEqual({ content: "", toolCalls: [] });
   });
 });

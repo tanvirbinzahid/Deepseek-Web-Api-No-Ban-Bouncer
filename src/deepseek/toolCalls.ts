@@ -2,20 +2,37 @@
 import { createHash } from "node:crypto";
 
 import { isRecord } from "../utils/json.js";
+import { collectJsonObjects, looksLikeToolJson } from "./toolCallJson.js";
 
 export interface OpenAIToolCall {
   id: string;
   type: "function";
-  function: {
-    name: string;
-    arguments: string;
-  };
+  function: { name: string; arguments: string };
 }
 
 export interface ParsedToolCalls {
   content: string;
   toolCalls: OpenAIToolCall[];
 }
+
+interface Range {
+  start: number;
+  end: number;
+}
+
+interface PayloadCandidate {
+  order: number;
+  consume: Range;
+  payload: { name: string; arguments: Record<string, unknown> };
+}
+
+interface TagBlock extends Range {
+  bodyStart: number;
+  bodyEnd: number;
+  attributes: string;
+}
+
+const TOOL_TAG = /<\s*(\/?)\s*(tool[_-]?call|_?call)\b([^>]*)>/gi;
 
 function stableValue(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(stableValue);
@@ -33,7 +50,6 @@ export function stableJson(value: unknown, pretty = false): string {
 
 function argumentObject(value: unknown): Record<string, unknown> | null {
   if (isRecord(value)) {
-    // Model sometimes nests args as { arguments: { ... } }.
     if (isRecord(value.arguments) && Object.keys(value).length === 1) {
       return argumentObject(value.arguments);
     }
@@ -78,57 +94,61 @@ export function formatToolCall(name: string, argumentsValue: unknown): string | 
   return `<tool_call>\n${stableJson({ name: name.trim(), arguments: argumentsObject })}\n</tool_call>`;
 }
 
-function tryParseJsonObject(raw: string): unknown | null {
-  const text = raw.trim();
-  if (!text.startsWith("{")) return null;
-  try {
-    return JSON.parse(text);
-  } catch {
-    for (let end = text.length; end > 1; end -= 1) {
-      const slice = text.slice(0, end).trim();
-      if (!slice.endsWith("}")) continue;
-      try {
-        return JSON.parse(slice);
-      } catch {
-        // continue
-      }
-    }
-    return null;
-  }
+function attributeName(attributes: string): string {
+  return attributes.match(/\bname\s*=\s*["']([^"']+)["']/i)?.[1]?.trim() ?? "";
 }
 
-/** Extract one balanced JSON object starting at `start` (string-aware). */
-function extractJsonObject(
-  text: string,
-  start: number,
-): { raw: string; end: number; value: unknown } | null {
-  if (text[start] !== "{") return null;
-  let depth = 0;
-  let inString = false;
-  let escape = false;
-  for (let index = start; index < text.length; index += 1) {
-    const char = text[index];
-    if (inString) {
-      if (escape) escape = false;
-      else if (char === "\\") escape = true;
-      else if (char === '"') inString = false;
-      continue;
-    }
-    if (char === '"') inString = true;
-    else if (char === "{") depth += 1;
-    else if (char === "}") {
-      depth -= 1;
-      if (depth === 0) {
-        const raw = text.slice(start, index + 1);
-        try {
-          return { raw, end: index + 1, value: JSON.parse(raw) };
-        } catch {
-          return null;
-        }
-      }
-    }
+function tagBlocks(text: string): TagBlock[] {
+  TOOL_TAG.lastIndex = 0;
+  const tags = [...text.matchAll(TOOL_TAG)].map((match) => ({
+    start: match.index ?? 0,
+    end: (match.index ?? 0) + match[0].length,
+    closing: Boolean(match[1]),
+    attributes: match[3] ?? "",
+  }));
+  const blocks: TagBlock[] = [];
+  for (let index = 0; index < tags.length; index += 1) {
+    const open = tags[index];
+    if (!open || open.closing) continue;
+    const next = tags[index + 1];
+    if (next && !next.closing) continue;
+    blocks.push({
+      start: open.start,
+      end: next?.end ?? text.length,
+      bodyStart: open.end,
+      bodyEnd: next?.start ?? text.length,
+      attributes: open.attributes,
+    });
+    if (next) index += 1;
   }
-  return null;
+  return blocks;
+}
+
+function overlaps(range: Range, blocked: readonly Range[]): boolean {
+  return blocked.some((item) => range.start < item.end && range.end > item.start);
+}
+
+function removeRanges(text: string, ranges: readonly Range[]): string {
+  const sorted = [...ranges]
+    .filter((range) => range.end > range.start)
+    .sort((left, right) => left.start - right.start || right.end - left.end);
+  let content = "";
+  let cursor = 0;
+  for (const range of sorted) {
+    if (range.end <= cursor) continue;
+    content += text.slice(cursor, Math.max(cursor, range.start));
+    cursor = range.end;
+  }
+  return content + text.slice(cursor);
+}
+
+function withoutToolTags(text: string): string {
+  TOOL_TAG.lastIndex = 0;
+  return text.replace(TOOL_TAG, "");
+}
+
+function protocolOnly(text: string, ranges: readonly Range[]): boolean {
+  return withoutToolTags(removeRanges(text, ranges)).trim().length === 0;
 }
 
 function pushUnique(
@@ -148,30 +168,71 @@ function pushUnique(
   });
 }
 
-function attributeName(openTagAttrs: string): string {
-  const match = openTagAttrs.match(/\bname\s*=\s*["']([^"']+)["']/i);
-  return match?.[1]?.trim() ?? "";
-}
-
-function collectMatches(
-  text: string,
-  pattern: RegExp,
-  onMatch: (match: RegExpMatchArray, index: number) => boolean,
-): Array<{ start: number; end: number }> {
-  const consumed: Array<{ start: number; end: number }> = [];
-  for (const match of text.matchAll(pattern)) {
-    const index = match.index ?? 0;
-    if (onMatch(match, index)) {
-      consumed.push({ start: index, end: index + match[0].length });
+function taggedCandidates(text: string, blocks: readonly TagBlock[]): {
+  calls: PayloadCandidate[];
+  artifacts: Range[];
+} {
+  const calls: PayloadCandidate[] = [];
+  const artifacts: Range[] = [];
+  for (const block of blocks) {
+    const body = text.slice(block.bodyStart, block.bodyEnd);
+    const name = attributeName(block.attributes);
+    const objects = collectJsonObjects(body, Boolean(name));
+    let valid = false;
+    for (const object of objects) {
+      const payload = callPayload(object.value, name);
+      if (!payload) continue;
+      valid = true;
+      calls.push({ order: block.bodyStart + object.start, consume: block, payload });
+    }
+    if (!valid && (looksLikeToolJson(body) || (name && /"arguments"\s*:/.test(body)))) {
+      artifacts.push(block);
     }
   }
-  return consumed;
+  return { calls, artifacts };
 }
 
-/**
- * DeepSeek often leaks tool tags into thinking/reasoning instead of final output.
- * Prefer output text; fall back to reasoning when output has no valid calls.
- */
+/** Parse model tool-call text into OpenAI-compatible calls and cleaned content. */
+export function parseToolCalls(text: string, seed = "tool"): ParsedToolCalls {
+  const blocks = tagBlocks(text);
+  const tagged = taggedCandidates(text, blocks);
+  const bareObjects = collectJsonObjects(text).filter(
+    (object) => !overlaps({ start: object.start, end: object.end }, blocks),
+  );
+  const bareRanges = bareObjects
+    .filter((object) => looksLikeToolJson(object.raw))
+    .map((object) => ({ start: object.start, end: object.end }));
+  const bareContext = protocolOnly(text, [...blocks, ...bareRanges]);
+  const bareCalls: PayloadCandidate[] = bareContext
+    ? bareObjects.flatMap((object) => {
+        const payload = callPayload(object.value);
+        return payload
+          ? [{ order: object.start, consume: { start: object.start, end: object.end }, payload }]
+          : [];
+      })
+    : [];
+  const candidates = [...tagged.calls, ...bareCalls].sort((left, right) => left.order - right.order);
+  const toolCalls: OpenAIToolCall[] = [];
+  const seen = new Set<string>();
+  for (const candidate of candidates) pushUnique(toolCalls, seed, candidate.payload, seen);
+
+  const artifactRanges = [...tagged.artifacts, ...bareRanges];
+  const isProtocolOnly = artifactRanges.length > 0 && protocolOnly(text, [...blocks, ...bareRanges]);
+  if (toolCalls.length === 0 && !isProtocolOnly) return { content: text, toolCalls };
+  const consumed = candidates.map((candidate) => candidate.consume);
+  const cleaned = withoutToolTags(
+    removeRanges(text, [
+      ...consumed,
+      ...(toolCalls.length > 0 ? blocks : []),
+      ...(bareContext || isProtocolOnly ? artifactRanges : []),
+    ]),
+  )
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  return { content: cleaned, toolCalls };
+}
+
+/** Prefer valid output calls, then promote calls leaked into reasoning. */
 export function parseToolCallsFromParts(
   outputText: string,
   reasoningText: string,
@@ -180,105 +241,10 @@ export function parseToolCallsFromParts(
   const fromOutput = parseToolCalls(outputText, seed);
   if (fromOutput.toolCalls.length > 0) return fromOutput;
   const fromReasoning = parseToolCalls(reasoningText, seed);
-  if (fromReasoning.toolCalls.length === 0) return fromOutput;
-  // Promote thinking-only tool calls; do not leak raw tags as assistant content.
-  return { content: fromOutput.content, toolCalls: fromReasoning.toolCalls };
-}
-
-/** Scan balanced `{...}` objects that look like tool payloads (name/arguments in either order). */
-function collectBareToolJson(
-  text: string,
-  seed: string,
-  toolCalls: OpenAIToolCall[],
-  seen: Set<string>,
-  blocked: Array<{ start: number; end: number }>,
-): Array<{ start: number; end: number }> {
-  const consumed: Array<{ start: number; end: number }> = [];
-  for (let i = 0; i < text.length; i += 1) {
-    if (text[i] !== "{") continue;
-    const extracted = extractJsonObject(text, i);
-    if (!extracted) continue;
-    const range = { start: i, end: extracted.end };
-    i = extracted.end - 1;
-    if (blocked.some((item) => !(range.end <= item.start || range.start >= item.end))) continue;
-    const value = extracted.value;
-    if (!isRecord(value)) continue;
-    const nested = isRecord(value.function) ? value.function : value;
-    if (typeof nested.name !== "string" || !("arguments" in nested)) continue;
-    const payload = callPayload(value);
-    if (!payload) continue;
-    pushUnique(toolCalls, seed, payload, seen);
-    consumed.push(range);
+  if (fromReasoning.toolCalls.length > 0) {
+    return { content: fromOutput.content, toolCalls: fromReasoning.toolCalls };
   }
-  return consumed;
-}
-
-/**
- * Parse model tool-call text into OpenAI tool_calls.
- * Handles exact tags, attribute names, nested wrappers, and bare JSON (any key order).
- */
-export function parseToolCalls(text: string, seed = "tool"): ParsedToolCalls {
-  const toolCalls: OpenAIToolCall[] = [];
-  const consumed: Array<{ start: number; end: number }> = [];
-  const seen = new Set<string>();
-
-  // 1) Real tool_call blocks (never match bare "_call" openers that wrap them).
-  const toolBlock =
-    /<\s*tool[_-]?call\b([^>]*)>\s*([\s\S]*?)\s*<\s*\/\s*tool[_-]?call\s*>/gi;
-  consumed.push(
-    ...collectMatches(text, toolBlock, (match) => {
-      const nameAttr = attributeName(match[1] ?? "");
-      const body = (match[2] ?? "").trim();
-      const parsed = tryParseJsonObject(body);
-      const payload =
-        callPayload(parsed, nameAttr) ??
-        (nameAttr && isRecord(parsed)
-          ? { name: nameAttr, arguments: argumentObject(parsed) ?? {} }
-          : null);
-      if (!payload || !payload.name) return false;
-      if (!isRecord(payload.arguments)) return false;
-      pushUnique(toolCalls, seed, {
-        name: payload.name,
-        arguments: payload.arguments,
-      }, seen);
-      return true;
-    }),
-  );
-
-  // 2) Mangled single-call wrappers: <_call>{json}</_call> or <_call>{json}</tool_call>
-  const mangled =
-    /<\s*_?call\b[^>]*>\s*(\{[\s\S]*?\})\s*<\s*\/\s*(?:tool[_-]?call|_?call)\s*>/gi;
-  consumed.push(
-    ...collectMatches(text, mangled, (match) => {
-      // Skip ranges already covered by real tool_call blocks.
-      const start = match.index ?? 0;
-      const end = start + match[0].length;
-      if (consumed.some((range) => start >= range.start && end <= range.end)) return false;
-      const payload = callPayload(tryParseJsonObject(match[1] ?? ""));
-      if (!payload) return false;
-      pushUnique(toolCalls, seed, payload, seen);
-      return true;
-    }),
-  );
-
-  // 3) Bare JSON objects with name + arguments (either key order), always.
-  // Tagged blocks may coexist with leftover bare payloads in the same reply.
-  consumed.push(...collectBareToolJson(text, seed, toolCalls, seen, consumed));
-
-  if (toolCalls.length === 0) return { content: text, toolCalls };
-
-  let content = "";
-  let cursor = 0;
-  for (const range of consumed.sort((a, b) => a.start - b.start)) {
-    content += text.slice(cursor, range.start);
-    cursor = range.end;
-  }
-  content += text.slice(cursor);
-  content = content
-    .replace(/<\s*\/?\s*(?:tool[_-]?call|_?call)\b[^>]*>/gi, "")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-  return { content, toolCalls };
+  return outputText.trim() ? fromOutput : fromReasoning;
 }
 
 export function canonicalParsedAssistantText(parsed: ParsedToolCalls): string {
@@ -291,5 +257,5 @@ export function canonicalParsedAssistantText(parsed: ParsedToolCalls): string {
 /** Store a canonical assistant turn so structured client history can match it later. */
 export function canonicalAssistantText(text: string): string {
   const parsed = parseToolCalls(text);
-  return parsed.toolCalls.length > 0 ? canonicalParsedAssistantText(parsed) : text;
+  return parsed.toolCalls.length > 0 ? canonicalParsedAssistantText(parsed) : parsed.content;
 }

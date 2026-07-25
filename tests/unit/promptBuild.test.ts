@@ -1,7 +1,7 @@
 /** Verifies compatibility prompt construction across OpenAI request shapes. */
 import { describe, expect, it } from "vitest";
 
-import { buildDeepSeekPrompt } from "../../src/deepseek/promptBuild.js";
+import { buildDeepSeekPrompt, buildToolRecoveryPrompt } from "../../src/deepseek/promptBuild.js";
 
 describe("buildDeepSeekPrompt", () => {
   it("includes system instructions before the user turn", () => {
@@ -67,6 +67,9 @@ describe("buildDeepSeekPrompt", () => {
     expect(result.prompt).toContain("Tool choice: \"auto\"");
     expect(result.prompt).toContain("Parallel tool calls: disabled");
     expect(result.prompt).toContain("arguments must match the selected tool schema");
+    expect(result.prompt).toContain("every string, {, and [ must be fully closed");
+    expect(result.prompt).toContain("Each call must be one complete block");
+    expect(result.prompt).toContain("never draft a partial call in RESPONSE");
     expect(result.prompt).toContain("Tool protocol is allowed only in the final RESPONSE channel.");
     expect(result.prompt).toContain("Never place <tool_call> blocks or tool JSON in THINK/reasoning.");
   });
@@ -215,6 +218,25 @@ describe("buildDeepSeekPrompt", () => {
     expect(result.prompt).toContain("user:\ncontinue");
     expect(result.prompt).not.toContain("private summary");
     expect(result.prompt).not.toContain("private chain");
+  });
+
+  it("builds a compact recovery prompt with complete tool results", () => {
+    const body = {
+      system: "very large repeated Pi instructions",
+      tools: [{ type: "function", function: { name: "read", parameters: { type: "object" } } }],
+    };
+    const result = buildToolRecoveryPrompt(
+      body,
+      [{ role: "tool", content: "full file result: export const value = 1;" }],
+      "仔细分析项目",
+    );
+
+    expect(result).toContain("Never end with THINK-only");
+    expect(result).toContain("Available tools: read");
+    expect(result).toContain("[Original user task]\n仔细分析项目");
+    expect(result).toContain("full file result: export const value = 1;");
+    expect(result).not.toContain("very large repeated Pi instructions");
+    expect(result).not.toContain('"parameters"');
   });
 
   it("keeps a simple request equivalent to the original user text", () => {
