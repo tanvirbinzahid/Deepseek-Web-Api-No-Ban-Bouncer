@@ -1,5 +1,7 @@
 # deepseek-web-api
 
+**语言：[中文](README.md) · [English](README.en.md)**
+
 [![CI](https://github.com/kittors/deepseek-web-api/actions/workflows/ci.yml/badge.svg)](https://github.com/kittors/deepseek-web-api/actions/workflows/ci.yml)
 [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D20-339933?logo=node.js&logoColor=white)](package.json)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -26,6 +28,7 @@
 - system/developer/AGENTS/skills、工具 schema、assistant/tool 历史的 prompt 兼容
 - 文本工具协议 → Chat `tool_calls` / Responses `function_call`
 - Pi `openai-completions` 与 `openai-responses` 配置示例
+- 内置 **No-Ban Bouncer** 反封禁中间件，支持环境变量与运行时管理接口（见[反封禁配置](#反封禁配置)）
 
 ## 前置要求
 
@@ -121,6 +124,47 @@ curl http://127.0.0.1:8787/v1/chat/completions \
 ```
 
 普通回答在 `choices[0].message.content`；thinking 在兼容字段 `reasoning_content`。完整字段与限制见 [docs/api.md](docs/api.md)。
+
+## 反封禁配置
+
+本 fork 内置 **No-Ban Bouncer** 中间件（`src/anti-ban/`），作用于补全接口：前期流量整形、每日用量上限、连续认证失败熔断、上游状态页报告异常时暂停请求。不会修改你的凭据或会话。
+
+### 环境变量
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `DS_ANTIBAN_WARMUP_REQUESTS` | `10` | 需要整形的前期补全数量 |
+| `DS_ANTIBAN_WARMUP_MIN_DELAY` | `90` | 前期补全之间的最小秒数 |
+| `DS_ANTIBAN_WARMUP_MAX_DELAY` | `180` | 前期补全之间的最大秒数（从 min 线性递增到 max） |
+| `DS_ANTIBAN_AUTH_FAIL_LIMIT` | `3` | 连续多少次认证级失败触发熔断 |
+| `DS_ANTIBAN_CIRCUIT_COOLDOWN` | `3600` | 熔断保持打开的秒数 |
+| `DS_ANTIBAN_DAILY_CAP` | `150` | 每个 UTC 日的补全上限 |
+| `DS_ANTIBAN_OUTAGE_POLL_INTERVAL` | `300` | 上游状态检查间隔（秒） |
+| `DS_ANTIBAN_STATUS_URL` | `https://status.deepseek.com/api/v2/status.json` | 上游状态接口 |
+| `DS_ANTIBAN_SESSION_REUSE` | `true` | 顺序请求复用同一会话线程 |
+
+### 管理接口
+
+运行时查看与修改配置，无需重启：
+
+```bash
+# 当前配置 + 实时状态（熔断状态、今日补全数、剩余 warmup、上游状态）
+curl http://127.0.0.1:8787/admin/antiban
+
+# 部分更新；只改你发送的字段
+curl -X POST http://127.0.0.1:8787/admin/antiban \
+  -H 'Content-Type: application/json' \
+  -d '{"dailyCap": 200, "warmupRequests": 5}'
+```
+
+拦截触发时，补全接口返回：
+
+| 状态码 | 含义 |
+| --- | --- |
+| `503` | 熔断打开或上游暂停中（含 `retry_after` 秒数） |
+| `429` | 当日补全上限已用尽（UTC 零点重置） |
+
+`GET /v1/models` 与 `GET /health` 不受限制。
 
 ## 模型与功能映射
 
@@ -272,6 +316,13 @@ CI 在 Node.js 20 和 22 上执行相同检查。单元测试不访问真实 Dee
 - OpenAI `store`、后台 Responses、严格 structured output、hosted tools 和 prompt caching 未实现。
 - 输入 token 无可靠上游计数，返回 `0`；输出 token 使用上游累计值。
 - 单 session 并发请求可能分叉。
+- 反封禁层只对自身流量做整形与限流，不能保证免疫上游风控；上游异常检测受轮询间隔限制（非实时）。
+
+## Credits
+
+- **基础项目**：[kittors/deepseek-web-api](https://github.com/kittors/deepseek-web-api) — DeepSeek Web 会话的 OpenAI 兼容封装（MIT，© 2026 kittors）。本 fork 基于其构建并沿用其许可证。
+- **反封禁层**：[No-Ban Bouncer](https://github.com/tanvirbinzahid/No-Ban-Bouncer) — 可配置的门卫中间件（warmup 整形、熔断、每日上限、上游异常暂停），由 [tanvirbinzahid](https://github.com/tanvirbinzahid) 集成本 fork。
+- **翻译**：中文原文由 kittors 撰写；英文翻译由 [tanvirbinzahid](https://github.com/tanvirbinzahid) 完成。
 
 ## Contributing
 

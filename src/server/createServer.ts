@@ -34,9 +34,15 @@ export function createServer(dependencies: ServerDependencies): Server {
       // Route the request
       await routeRequest(request, response, { client, apiKeys, debug });
 
-      // Record completion on success
-      if (antiBan && response.statusCode === 200) {
-        await antiBan.recordCompletion();
+      // Feed the anti-ban state machine
+      if (antiBan) {
+        const code = response.statusCode;
+        if (code === 200) {
+          antiBan.recordAuthOk();
+          antiBan.recordCompletion();
+        } else if (code === 401 || code === 403 || code === 429 || code >= 500) {
+          antiBan.recordAuthFail();
+        }
       }
     } catch (error: unknown) {
       handleRouteError(response, error, debug);
@@ -62,7 +68,7 @@ async function handleAntiBanAdmin(request: http.IncomingMessage, response: http.
       await antiBan.updateConfig(updates);
       response.writeHead(200, { 'Content-Type': 'application/json' });
       response.end(JSON.stringify({ success: true, config: antiBan.getConfig() }));
-    } catch (err) {
+    } catch {
       response.writeHead(400, { 'Content-Type': 'application/json' });
       response.end(JSON.stringify({ error: 'Invalid JSON' }));
     }
