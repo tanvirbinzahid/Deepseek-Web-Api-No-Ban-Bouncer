@@ -1,43 +1,43 @@
 # deepseek-web-api
 
-**语言：[中文](README.md) · [English](README.en.md)**
+**Language: English · [中文](README.zh.md)**
 
 [![CI](https://github.com/kittors/deepseek-web-api/actions/workflows/ci.yml/badge.svg)](https://github.com/kittors/deepseek-web-api/actions/workflows/ci.yml)
 [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D20-339933?logo=node.js&logoColor=white)](package.json)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-将已登录的 `chat.deepseek.com` Web 会话包装为本地 **OpenAI-compatible API**，支持 Responses API、Chat Completions、流式 reasoning/output、多轮 session、Chrome/CDP 登录态和 prompt-based tool calling。
+Wraps an authenticated `chat.deepseek.com` web session into a local **OpenAI-compatible API**, with Responses API, Chat Completions, streaming reasoning/output, multi-turn sessions, Chrome/CDP login state, and prompt-based tool calling.
 
 > An unofficial local OpenAI-compatible API for authenticated DeepSeek Web sessions. Text-only, GitHub-first, and designed for Pi and other OpenAI-compatible clients.
 
 > [!WARNING]
-> **非官方项目。** 本项目调用 DeepSeek Web 私有接口，不隶属于 DeepSeek 或 OpenAI。Web API、登录、PoW、风控和前端 worker 可能随时变化，并可能带来账号限制风险。默认只监听 `127.0.0.1`；不要把服务直接暴露到公网。使用前请自行确认服务条款、适用法律和账号风险。
+> **Unofficial project.** This project calls DeepSeek Web's private endpoints and is not affiliated with DeepSeek or OpenAI. The Web API, login, PoW, risk control, and frontend workers may change at any time and may lead to account restrictions. By default it only listens on `127.0.0.1`; do not expose the service directly to the public internet. Before using it, review the terms of service, applicable law, and account risk yourself.
 
-## 功能
+## Features
 
-- `POST /v1/responses`：流式/非流式 Responses 兼容层
-- `POST /v1/chat/completions`：流式/非流式 Chat Completions 兼容层
-- `GET /v1/models`、`GET /health`
-- 自动连接 CDP 或启动专用 Chrome/Chromium profile
-- 复用并刷新 `userToken` + cookies，持久化 owner-only `auth.json`
-- DeepSeek Web PoW challenge/worker 求解
+- `POST /v1/responses`: streaming/non-streaming Responses compatibility layer
+- `POST /v1/chat/completions`: streaming/non-streaming Chat Completions compatibility layer
+- `GET /v1/models`, `GET /health`
+- Auto-connects to CDP or launches a dedicated Chrome/Chromium profile
+- Reuses and refreshes `userToken` + cookies; persists owner-only `auth.json`
+- Solves the DeepSeek Web PoW challenge/worker
 - `THINK` → Responses reasoning / Chat `reasoning_content`
 - `RESPONSE` → Responses output text / Chat content
-- API key 保护全部 `/v1/*` 路由
-- DeepSeek session 与 `parent_message_id` 持久化；切换 flash/pro 或 thinking 不主动分叉
-- system/developer/AGENTS/skills、工具 schema、assistant/tool 历史的 prompt 兼容
-- 文本工具协议 → Chat `tool_calls` / Responses `function_call`
-- Pi `openai-completions` 与 `openai-responses` 配置示例
-- 内置 **No-Ban Bouncer** 反封禁中间件，支持环境变量与运行时管理接口（见[反封禁配置](#反封禁配置)）
+- API key protects all `/v1/*` routes
+- DeepSeek session and `parent_message_id` persistence; switching flash/pro or thinking does not force a branch
+- Prompt compatibility for system/developer/AGENTS/skills, tool schemas, and assistant/tool history
+- Text tool protocol → Chat `tool_calls` / Responses `function_call`
+- Pi `openai-completions` and `openai-responses` config examples
+- **Built-in No-Ban Bouncer** anti-ban middleware with a runtime admin API (see [Anti-Ban Configuration](#anti-ban-configuration))
 
-## 前置要求
+## Prerequisites
 
-- Node.js 20 或更高版本
+- Node.js 20 or higher
 - pnpm 10
-- Google Chrome 或 Chromium
-- 能访问并登录 `https://chat.deepseek.com`
+- Google Chrome or Chromium
+- Access to and a login for `https://chat.deepseek.com`
 
-## 快速开始
+## Quick start
 
 ```bash
 git clone https://github.com/kittors/deepseek-web-api.git
@@ -47,34 +47,34 @@ pnpm build
 pnpm start
 ```
 
-默认地址：
+Default address:
 
 ```text
 http://127.0.0.1:8787
 ```
 
-首次启动流程：
+First-start flow:
 
-1. 尝试验证 `data/auth.json`，有效时不打开浏览器。
-2. 否则连接 `DS_CDP`（默认 `http://127.0.0.1:9333`）。
-3. 默认本地 CDP 不可用时，启动 `data/chrome-profile/` 专用 Chrome。
-4. 如未登录，打开可见窗口并等待你完成 DeepSeek 登录。
-5. 登录验证成功后原子写入 `data/auth.json`，再启动 HTTP 服务。
-6. 日常 PoW/browser 工作默认 headless；`DS_SHOW_BROWSER=1` 可显示窗口。
+1. Try validating `data/auth.json`; if valid, no browser is opened.
+2. Otherwise connect to `DS_CDP` (default `http://127.0.0.1:9333`).
+3. If the default local CDP is unavailable, launch a dedicated Chrome at `data/chrome-profile/`.
+4. If not logged in, a visible window opens and waits for you to complete the DeepSeek login.
+5. After successful login verification, `data/auth.json` is written atomically, then the HTTP service starts.
+6. Daily PoW/browser work is headless by default; `DS_SHOW_BROWSER=1` shows the window.
 
-也可先显式完成登录：
+You can also complete login explicitly first:
 
 ```bash
 pnpm login
 ```
 
-首次读取或生成本地 API key：
+Read or generate the local API key for the first time:
 
 ```bash
 cat data/.api-key
 ```
 
-## API 示例
+## API examples
 
 ```bash
 API_KEY="$(cat data/.api-key)"
@@ -84,107 +84,107 @@ API_KEY="$(cat data/.api-key)"
 
 ```bash
 curl http://127.0.0.1:8787/v1/responses \
-  -H "Authorization: Bearer $API_KEY" \
+  -H "Authorization: Bearer ***" \
   -H 'Content-Type: application/json' \
   -d '{
     "model": "deepseek-v4-flash",
-    "input": "用三句话解释 TypeScript",
+    "input": "Explain TypeScript in three sentences",
     "reasoning": {"effort": "medium"}
   }'
 ```
 
-流式：
+Streaming:
 
 ```bash
 curl -N http://127.0.0.1:8787/v1/responses \
-  -H "Authorization: Bearer $API_KEY" \
+  -H "Authorization: Bearer ***" \
   -H 'Content-Type: application/json' \
   -d '{
     "model": "deepseek-v4-pro",
-    "input": "证明根号 2 是无理数",
+    "input": "Prove that the square root of 2 is irrational",
     "stream": true
   }'
 ```
 
-Responses `output` 可包含 `reasoning`、assistant `message` 和 `function_call`。事件顺序、`previous_response_id` 与支持边界见 [docs/responses-api.md](docs/responses-api.md)。
+Responses `output` can contain `reasoning`, assistant `message`, and `function_call`. See [docs/responses-api.md](docs/responses-api.md) for event ordering, `previous_response_id`, and support boundaries.
 
 ### Chat Completions
 
 ```bash
 curl http://127.0.0.1:8787/v1/chat/completions \
-  -H "x-api-key: $API_KEY" \
+  -H "x-api-key: *** \
   -H 'Content-Type: application/json' \
   -d '{
     "model": "deepseek-v4-flash",
     "messages": [
-      {"role": "system", "content": "回答要简洁。"},
-      {"role": "user", "content": "你好"}
+      {"role": "system", "content": "Keep answers brief."},
+      {"role": "user", "content": "Hello"}
     ]
   }'
 ```
 
-普通回答在 `choices[0].message.content`；thinking 在兼容字段 `reasoning_content`。完整字段与限制见 [docs/api.md](docs/api.md)。
+Normal answers are in `choices[0].message.content`; thinking is in the compatibility field `reasoning_content`. See [docs/api.md](docs/api.md) for the full field set and limits.
 
-## 反封禁配置
+## Anti-Ban Configuration
 
-本 fork 内置 **No-Ban Bouncer** 中间件（`src/anti-ban/`），作用于补全接口：前期流量整形、每日用量上限、连续认证失败熔断、上游状态页报告异常时暂停请求。不会修改你的凭据或会话。
+This fork bundles a **No-Ban Bouncer** middleware (`src/anti-ban/`) in front of the completion endpoints. It paces early traffic, caps daily volume, trips a circuit breaker on repeated auth failures, and holds requests while the upstream status page reports degradation. It does not modify your credentials or session.
 
-### 环境变量
+### Environment variables
 
-| 变量 | 默认值 | 说明 |
+| Variable | Default | Description |
 | --- | --- | --- |
-| `DS_ANTIBAN_WARMUP_REQUESTS` | `10` | 需要整形的前期补全数量 |
-| `DS_ANTIBAN_WARMUP_MIN_DELAY` | `90` | 前期补全之间的最小秒数 |
-| `DS_ANTIBAN_WARMUP_MAX_DELAY` | `180` | 前期补全之间的最大秒数（从 min 线性递增到 max） |
-| `DS_ANTIBAN_AUTH_FAIL_LIMIT` | `3` | 连续多少次认证级失败触发熔断 |
-| `DS_ANTIBAN_CIRCUIT_COOLDOWN` | `3600` | 熔断保持打开的秒数 |
-| `DS_ANTIBAN_DAILY_CAP` | `150` | 每个 UTC 日的补全上限 |
-| `DS_ANTIBAN_OUTAGE_POLL_INTERVAL` | `300` | 上游状态检查间隔（秒） |
-| `DS_ANTIBAN_STATUS_URL` | `https://status.deepseek.com/api/v2/status.json` | 上游状态接口 |
-| `DS_ANTIBAN_SESSION_REUSE` | `true` | 顺序请求复用同一会话线程 |
+| `DS_ANTIBAN_WARMUP_REQUESTS` | `10` | Number of early completions to pace |
+| `DS_ANTIBAN_WARMUP_MIN_DELAY` | `90` | Minimum seconds between warm-up completions |
+| `DS_ANTIBAN_WARMUP_MAX_DELAY` | `180` | Maximum seconds between warm-up completions (linear ramp from min to max) |
+| `DS_ANTIBAN_AUTH_FAIL_LIMIT` | `3` | Consecutive auth-level failures that open the circuit breaker |
+| `DS_ANTIBAN_CIRCUIT_COOLDOWN` | `3600` | Seconds the breaker stays open |
+| `DS_ANTIBAN_DAILY_CAP` | `150` | Max completions per UTC day |
+| `DS_ANTIBAN_OUTAGE_POLL_INTERVAL` | `300` | Seconds between upstream status checks |
+| `DS_ANTIBAN_STATUS_URL` | `https://status.deepseek.com/api/v2/status.json` | Upstream status endpoint |
+| `DS_ANTIBAN_SESSION_REUSE` | `true` | Continue one conversation thread for sequential requests |
 
-### 管理接口
+### Admin API
 
-运行时查看与修改配置，无需重启：
+Inspect and change settings at runtime without restarting:
 
 ```bash
-# 当前配置 + 实时状态（熔断状态、今日补全数、剩余 warmup、上游状态）
+# Current config + live status (circuit state, completions today, warm-up remaining, provider status)
 curl http://127.0.0.1:8787/admin/antiban
 
-# 部分更新；只改你发送的字段
+# Partial update; only the fields you send change
 curl -X POST http://127.0.0.1:8787/admin/antiban \
   -H 'Content-Type: application/json' \
   -d '{"dailyCap": 200, "warmupRequests": 5}'
 ```
 
-拦截触发时，补全接口返回：
+When a gate trips, completion endpoints return:
 
-| 状态码 | 含义 |
+| Status | Meaning |
 | --- | --- |
-| `503` | 熔断打开或上游暂停中（含 `retry_after` 秒数） |
-| `429` | 当日补全上限已用尽（UTC 零点重置） |
+| `503` | Circuit breaker open or upstream hold active (includes `retry_after` seconds) |
+| `429` | Daily cap reached (resets at UTC midnight) |
 
-`GET /v1/models` 与 `GET /health` 不受限制。
+`GET /v1/models` and `GET /health` are never gated.
 
-## 模型与功能映射
+## Model & feature mapping
 
-| 公共模型 ID | DeepSeek Web `model_type` | Search |
+| Public model ID | DeepSeek Web `model_type` | Search |
 | --- | --- | --- |
-| `deepseek-v4-flash` | `default` | 支持 |
-| `deepseek-v4-pro` | `expert` | Web 端不支持，服务端强制关闭 |
+| `deepseek-v4-flash` | `default` | Supported |
+| `deepseek-v4-pro` | `expert` | Not supported on the web side; server forces it off |
 
-兼容别名：
+Compatibility aliases:
 
-- flash：`flash`、`default`、`deepseek-chat`
-- pro：`pro`、`expert`、`deepseek-reasoner`
+- flash: `flash`, `default`, `deepseek-chat`
+- pro: `pro`, `expert`, `deepseek-reasoner`
 
-DeepSeek Web 只提供 `thinking_enabled: boolean`。`none`/`off`/`0`/`false`/`disabled` 映射为关闭；其他 `reasoning.effort` 或 thinking level 都映射为开启。
+DeepSeek Web only provides `thinking_enabled: boolean`. `none`/`off`/`0`/`false`/`disabled` map to off; any other `reasoning.effort` or thinking level maps to on.
 
-Web 搜索可通过 `search_enabled: true`、`web_search: true` 或包含 `web`/`search` 类型的工具开启，仅 flash 生效。
+Web search can be enabled with `search_enabled: true`, `web_search: true`, or a tool of type `web`/`search`; it only works on flash.
 
-## Pi 集成
+## Pi integration
 
-推荐先使用 Pi 的 `api: "openai-completions"`：
+Prefer Pi's `api: "openai-completions"` first:
 
 ```json
 {
@@ -208,23 +208,23 @@ Web 搜索可通过 `search_enabled: true`、`web_search: true` 或包含 `web`/
 }
 ```
 
-Responses 路径、thinking level、AGENTS.md/skills、MCP-backed tools、tool-call 历史和多轮行为见 **[docs/pi.md](docs/pi.md)**。该文档提供两套可复制的完整 `models.json` 配置。
+For the Responses path, thinking levels, AGENTS.md/skills, MCP-backed tools, tool-call history, and multi-turn behavior, see **[docs/pi.md](docs/pi.md)**. That document provides two complete copy-paste `models.json` configurations.
 
-## 多轮 session
+## Multi-turn sessions
 
-继续同一会话有三种方式：
+Three ways to continue the same conversation:
 
-1. 传回本服务返回的 `previous_response_id`；
-2. 传回 `conversation` / `chat_session_id`；
-3. 像 Pi 一样发送完整稳定历史，由 `SessionStore` 匹配。
+1. Return the `previous_response_id` this service returned;
+2. Return `conversation` / `chat_session_id`;
+3. Send the full stable history (like Pi does) and let the `SessionStore` match it.
 
-服务端保存 DeepSeek session 和最后一个可信 `response_message_id`。切换公开模型或 thinking 开关时，只要历史或显式 ID 匹配，就继续同一 DeepSeek session。
+The server keeps the DeepSeek session and the last trusted `response_message_id`. When you switch the public model or the thinking toggle, the same DeepSeek session continues as long as the history or an explicit ID matches.
 
-> 同一 session 不支持并发写入。并行请求可能复用同一个 parent 并在上游形成分支。
+> Concurrent writes within one session are not supported. Parallel requests may reuse the same parent and branch upstream.
 
-## Tool calling 说明
+## Tool calling notes
 
-DeepSeek Web 没有 OpenAI 原生 function calling。本项目把 tools/functions 和选择策略写入 prompt，并要求模型输出：
+DeepSeek Web has no native OpenAI function calling. This project writes the tools/functions and selection policy into the prompt and requires the model to output:
 
 ```text
 <tool_call>
@@ -232,35 +232,35 @@ DeepSeek Web 没有 OpenAI 原生 function calling。本项目把 tools/function
 </tool_call>
 ```
 
-解析成功后映射为标准结构。工具结果轮也会进入 session/history 匹配。
+Once parsed successfully it maps to the standard structure. Tool-result rounds also enter session/history matching.
 
-这仍是**提示词模拟**：不能保证模型一定调用工具、严格遵守 JSON Schema 或正确并行调用。带工具的流式请求可能在尾部集中输出结构化 call，因为服务必须先清理协议文本。
+This is still **prompt emulation**: it does not guarantee the model will call tools, strictly follow JSON Schema, or parallel-call correctly. Streaming requests with tools may emit the structured calls in a burst at the tail, because the service must strip the protocol text first.
 
-## 环境变量
+## Environment variables
 
-| 变量 | 默认值 | 说明 |
+| Variable | Default | Description |
 | --- | --- | --- |
-| `HOST` | `127.0.0.1` | HTTP 监听地址；不建议改为公网地址 |
-| `PORT` | `8787` | HTTP 端口 |
+| `HOST` | `127.0.0.1` | HTTP listen address; not recommended to change to a public address |
+| `PORT` | `8787` | HTTP port |
 | `DS_CDP` | `http://127.0.0.1:9333` | Chrome DevTools Protocol endpoint |
-| `DS_DATA_DIR` | `./data` | 运行时凭据、session、profile 根目录 |
-| `DS_API_KEY` | 空 | 一个或多个 API key，逗号/空白分隔；优先于文件 |
-| `DS_API_KEY_FILE` | `data/.api-key` | API key 文件，每行一个 |
-| `DS_AUTH_FILE` | `data/auth.json` | DeepSeek token/cookie 快照 |
-| `DS_SESSION_FILE` | `data/sessions.json` | session lineage 索引 |
-| `DS_CHROME_PROFILE` | `data/chrome-profile` | 专用 Chrome profile |
-| `DS_CHROME_PATH` | 自动发现 | Chrome/Chromium 可执行文件 |
-| `DS_SHOW_BROWSER` | `false` | 日常请求显示浏览器；登录需要时始终可见 |
-| `DS_POW_JS` | 内置当前 worker URL | DeepSeekHashV1 worker chunk URL |
-| `DS_BASE_URL` | `https://chat.deepseek.com` | 上游地址，主要用于调试 |
-| `DS_DEBUG` | `false` | 增加调试日志和 HTTP error stack |
-| `DS_TOOL_REASONING` | `hidden` | 工具轮 reasoning：`hidden` 或 `clean` |
+| `DS_DATA_DIR` | `./data` | Root for runtime credentials, sessions, and profile |
+| `DS_API_KEY` | empty | One or more API keys, comma/whitespace separated; takes precedence over the file |
+| `DS_API_KEY_FILE` | `data/.api-key` | API key file, one per line |
+| `DS_AUTH_FILE` | `data/auth.json` | DeepSeek token/cookie snapshot |
+| `DS_SESSION_FILE` | `data/sessions.json` | Session lineage index |
+| `DS_CHROME_PROFILE` | `data/chrome-profile` | Dedicated Chrome profile |
+| `DS_CHROME_PATH` | auto-discovered | Chrome/Chromium executable |
+| `DS_SHOW_BROWSER` | `false` | Show the browser for daily requests; always visible when login needs it |
+| `DS_POW_JS` | built-in current worker URL | DeepSeekHashV1 worker chunk URL |
+| `DS_BASE_URL` | `https://chat.deepseek.com` | Upstream URL, mainly for debugging |
+| `DS_DEBUG` | `false` | Extra debug logs and HTTP error stacks |
+| `DS_TOOL_REASONING` | `hidden` | Tool-round reasoning: `hidden` or `clean` |
 
-可复制 `.env.example` 为 `.env`。启动时读取该文件，但不会覆盖已存在的进程环境变量。
+You can copy `.env.example` to `.env`. The file is read at startup, but it does not override existing process environment variables.
 
-## 安全
+## Security
 
-以下路径包含凭据或私人会话内容，已由 `.gitignore` 排除：
+The following paths contain credentials or private session content and are excluded by `.gitignore`:
 
 ```text
 .env
@@ -270,25 +270,25 @@ data/sessions.json
 data/chrome-profile/
 ```
 
-- 不要提交、上传、打包、截图或粘贴这些内容。
-- 保持 loopback 监听；API key 不是充分的公网安全边界。
-- 如确需跨主机访问，使用受控网络、TLS reverse proxy、来源限制和独立密钥轮换。
-- 认证数据泄漏可能等价于 DeepSeek 登录会话泄漏。
+- Never commit, upload, package, screenshot, or paste these contents.
+- Keep loopback listening; an API key is not a sufficient public-network security boundary.
+- If you must allow cross-host access, use a controlled network, a TLS reverse proxy, origin restrictions, and separate key rotation.
+- An auth-data leak is equivalent to leaking the DeepSeek login session.
 
-安全披露与账号风险见 [SECURITY.md](SECURITY.md)。
+See [SECURITY.md](SECURITY.md) for security disclosure and account risk.
 
-## 文档
+## Documentation
 
-- [架构与请求链路](docs/architecture.md)
-- [API 兼容矩阵](docs/api.md)
-- [Responses API 事件与对象](docs/responses-api.md)
-- [Pi 完整集成指南](docs/pi.md)
-- [故障排查](docs/troubleshooting.md)
-- [维护者规格](SPEC.md)
-- [贡献指南](CONTRIBUTING.md)
-- [变更记录](CHANGELOG.md)
+- [Architecture & request flow](docs/architecture.md)
+- [API compatibility matrix](docs/api.md)
+- [Responses API events & objects](docs/responses-api.md)
+- [Pi full integration guide](docs/pi.md)
+- [Troubleshooting](docs/troubleshooting.md)
+- [Maintainer spec](SPEC.md)
+- [Contributing guide](CONTRIBUTING.md)
+- [Changelog](CHANGELOG.md)
 
-## 开发与验证
+## Development & verification
 
 ```bash
 pnpm install --frozen-lockfile
@@ -298,35 +298,35 @@ pnpm test
 pnpm build
 ```
 
-CI 在 Node.js 20 和 22 上执行相同检查。单元测试不访问真实 DeepSeek 账号，也不在 CI 启动登录 e2e。
+CI runs the same checks on Node.js 20 and 22. Unit tests do not touch a real DeepSeek account, and login e2e is not started in CI.
 
-项目约束：
+Project constraints:
 
-- TypeScript ESM，Node.js >= 20
-- `node:http`，不引入重型 Web 框架
-- 每个 `src/**/*.ts` 文件不超过 300 行
-- strict TypeScript；不使用 `any` 绕过边界类型
-- 协议行为改动必须有最小回归测试
+- TypeScript ESM, Node.js >= 20
+- `node:http`; no heavy web framework
+- Each `src/**/*.ts` file stays under 300 lines
+- strict TypeScript; no `any` to bypass boundary types
+- Protocol behavior changes require a minimal regression test
 
-## 已知限制
+## Known limitations
 
-- 依赖私有 Web API、前端 PoW worker 和账号风控，可能无预告失效。
-- 仅支持文本；不支持图片、文件、音频、视频或上传。
-- 工具调用为 prompt 兼容层，不是原生 function calling。
-- OpenAI `store`、后台 Responses、严格 structured output、hosted tools 和 prompt caching 未实现。
-- 输入 token 无可靠上游计数，返回 `0`；输出 token 使用上游累计值。
-- 单 session 并发请求可能分叉。
-- 反封禁层只对自身流量做整形与限流，不能保证免疫上游风控；上游异常检测受轮询间隔限制（非实时）。
+- Depends on the private Web API, the frontend PoW worker, and account risk control; any of them may break without notice.
+- Text only; no image, file, audio, video, or upload support.
+- Tool calls are a prompt compatibility layer, not native function calling.
+- OpenAI `store`, background Responses, strict structured output, hosted tools, and prompt caching are not implemented.
+- Input tokens have no reliable upstream count and return `0`; output tokens use the upstream cumulative value.
+- Concurrent requests on one session may fork.
+- The anti-ban layer paces and caps your own traffic; it cannot guarantee immunity from upstream risk control, and the outage hold is bounded by the poll interval (no instant detection).
 
 ## Credits
 
-- **基础项目**：[kittors/deepseek-web-api](https://github.com/kittors/deepseek-web-api) — DeepSeek Web 会话的 OpenAI 兼容封装（MIT，© 2026 kittors）。本 fork 基于其构建并沿用其许可证。
-- **反封禁层**：[No-Ban Bouncer](https://github.com/tanvirbinzahid/No-Ban-Bouncer) — 可配置的门卫中间件（warmup 整形、熔断、每日上限、上游异常暂停），由 [tanvirbinzahid](https://github.com/tanvirbinzahid) 集成本 fork。
-- **翻译**：中文原文由 kittors 撰写；英文翻译由 [tanvirbinzahid](https://github.com/tanvirbinzahid) 完成。
+- **Base project**: [kittors/deepseek-web-api](https://github.com/kittors/deepseek-web-api) — the OpenAI-compatible wrapper for DeepSeek Web sessions (MIT, © 2026 kittors). This fork builds on it and preserves its license.
+- **Anti-ban layer**: [No-Ban Bouncer](https://github.com/tanvirbinzahid/No-Ban-Bouncer) — the configurable doorman middleware (warm-up pacing, circuit breaker, daily cap, outage hold) integrated here by [tanvirbinzahid](https://github.com/tanvirbinzahid).
+- **Translations**: Chinese original by kittors; English translation by [tanvirbinzahid](https://github.com/tanvirbinzahid).
 
 ## Contributing
 
-欢迎 focused issue/PR。提交前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md) 和 [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)，并确保完整验证通过。报告日志前必须移除所有 token、cookie、key、账号和私人路径。
+Focused issues/PRs are welcome. Before submitting, read [CONTRIBUTING.md](CONTRIBUTING.md) and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md), and make sure the full verification passes. Before reporting logs, remove all tokens, cookies, keys, accounts, and private paths.
 
 ## License
 
