@@ -13,6 +13,7 @@ import { createServer } from "./server/createServer.js";
 import { errorMessage } from "./utils/errors.js";
 import { createLogger } from "./utils/logger.js";
 import { isRecord } from "./utils/json.js";
+import { AntiBanManager } from "./anti-ban/index.js";
 
 function listen(server: Server, port: number, host: string): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -40,12 +41,16 @@ async function start(): Promise<void> {
   const { config, logger, client } = await buildRuntime();
   const apiKey = loadApiKey(config.apiKeyFile);
   await client.initialize();
-  const server = createServer({ client, apiKeys: apiKey.keys, debug: config.debug });
+
+  const antiBan = new AntiBanManager();
+  const server = createServer({ client, apiKeys: apiKey.keys, debug: config.debug, antiBan });
   await listen(server, config.port, config.host);
+
   logger.info(`deepseek-web-api 已启动：http://${config.host}:${config.port}`);
   logger.info("路由：POST /v1/responses、POST /v1/chat/completions、GET /v1/models、GET /health");
   logger.info("API key", { count: apiKey.keys.length, file: config.apiKeyFile, source: apiKey.source });
   logger.info("Chrome CDP", { endpoint: config.cdpEndpoint });
+  logger.info("Anti-Ban", { warmup: antiBan.getConfig().warmupRequests, dailyCap: antiBan.getConfig().dailyCap });
 
   const shutdown = (signal: string): void => {
     logger.info(`收到 ${signal}，正在停止服务`);
