@@ -1,5 +1,5 @@
-import { AntiBanConfig, loadConfigFromEnv } from './config.js';
-import { logger } from '../utils/logger.js';
+import type { AntiBanConfig } from './config.js';
+import { loadConfigFromEnv } from './config.js';
 
 export class AntiBanManager {
   private config: AntiBanConfig;
@@ -9,9 +9,6 @@ export class AntiBanManager {
   private completionDate = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
   private warmupCount = 0;
   private warmupStart: Date | null = null;
-  private lock: Promise<void> | null = null;
-  private idleLifeInterval: NodeJS.Timeout | null = null;
-  private statusCheckInterval: NodeJS.Timeout | null = null;
   private providerStatus: string = 'operational';
 
   constructor(config?: Partial<AntiBanConfig>) {
@@ -22,24 +19,16 @@ export class AntiBanManager {
 
   private startBackgroundTasks() {
     // Idle life: simulate a tick every 45-150s
-    this.idleLifeInterval = setInterval(() => {
-      logger.debug('[AntiBan] Idle life tick');
+    setInterval(() => {
+      console.log('[AntiBan] Idle life tick');
     }, 45000 + Math.random() * 105000);
 
     // Status monitor: poll statusUrl every interval
-    this.statusCheckInterval = setInterval(() => {
+    setInterval(() => {
       // In a real implementation, fetch statusUrl and update providerStatus
       // For now, assume operational
-      logger.debug('[AntiBan] Status check: operational');
+      console.log('[AntiBan] Status check: operational');
     }, this.config.outagePollInterval * 1000);
-  }
-
-  private async withLock<T>(fn: () => Promise<T>): Promise<T> {
-    const prevLock = this.lock;
-    const unlock = () => { this.lock = null; };
-    const newLock = (prevLock ? prevLock.then(() => fn()) : fn()).finally(unlock);
-    this.lock = newLock;
-    return newLock;
   }
 
   async check(requestPath: string): Promise<{ allowed: boolean; status?: number; response?: any }> {
@@ -97,38 +86,30 @@ export class AntiBanManager {
     return { allowed: true };
   }
 
-  async recordAuthFail() {
-    await this.withLock(async () => {
-      this.authFailStreak += 1;
-      if (this.authFailStreak >= this.config.authFailLimit) {
-        this.circuitOpenUntil = new Date(Date.now() + this.config.circuitCooldown * 1000);
-        logger.warn(`[AntiBan] Circuit opened for ${this.config.circuitCooldown}s`);
-      }
-    });
+  recordAuthFail() {
+    this.authFailStreak += 1;
+    if (this.authFailStreak >= this.config.authFailLimit) {
+      this.circuitOpenUntil = new Date(Date.now() + this.config.circuitCooldown * 1000);
+      console.log(`[AntiBan] Circuit opened for ${this.config.circuitCooldown}s`);
+    }
   }
 
-  async recordAuthOk() {
-    await this.withLock(async () => {
-      this.authFailStreak = 0;
-    });
+  recordAuthOk() {
+    this.authFailStreak = 0;
   }
 
-  async recordCompletion() {
-    await this.withLock(async () => {
-      this.completionsToday += 1;
-      this.warmupCount += 1;
-    });
+  recordCompletion() {
+    this.completionsToday += 1;
+    this.warmupCount += 1;
   }
 
   getConfig(): AntiBanConfig {
     return { ...this.config };
   }
 
-  async updateConfig(newConfig: Partial<AntiBanConfig>) {
-    await this.withLock(async () => {
-      this.config = { ...this.config, ...newConfig };
-      logger.info('[AntiBan] Config updated');
-    });
+  updateConfig(newConfig: Partial<AntiBanConfig>) {
+    this.config = { ...this.config, ...newConfig };
+    console.log('[AntiBan] Config updated');
   }
 
   getStatus() {

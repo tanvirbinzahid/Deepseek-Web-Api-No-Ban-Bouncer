@@ -24,25 +24,18 @@ export function createServer(dependencies: ServerDependencies): Server {
       if (antiBan) {
         const checkResult = await antiBan.check(pathname);
         if (!checkResult.allowed) {
-          response.writeHead(checkResult.status || 403, { 'Content-Type': 'application/json' });
+          response.statusCode = checkResult.status || 403;
+          response.setHeader('Content-Type', 'application/json');
           response.end(JSON.stringify(checkResult.response));
           return;
         }
       }
 
-      // Track response status to record completions
-      let finalStatus = 200;
-      const originalWriteHead = response.writeHead.bind(response);
-      response.writeHead = function(statusCode, headers) {
-        finalStatus = statusCode;
-        return originalWriteHead(statusCode, headers);
-      };
-
       // Route the request
       await routeRequest(request, response, { client, apiKeys, debug });
 
       // Record completion on success
-      if (antiBan && finalStatus === 200) {
+      if (antiBan && response.statusCode === 200) {
         await antiBan.recordCompletion();
       }
     } catch (error: unknown) {
